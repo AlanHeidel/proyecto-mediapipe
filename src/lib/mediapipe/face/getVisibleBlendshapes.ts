@@ -61,7 +61,7 @@ const BLENDSHAPE_LABELS: Record<string, string> = {
 
 export function getVisibleBlendshapes(
   result: FaceLandmarkerResult,
-  threshold = 0.5
+  threshold = 0.6
 ) {
   const firstFaceBlendshapes = result.faceBlendshapes[0];
 
