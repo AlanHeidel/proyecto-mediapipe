@@ -18,10 +18,26 @@ import {
 } from "./lib/mediapipe/face/getVisibleBlendshapes";
 import { drawHandLandmarks } from "./lib/mediapipe/hands/drawHandLandmarks";
 import { drawObjectDetections } from "./lib/mediapipe/objects/drawObjectDetections";
+import { drawFingerTicTacToe } from "./lib/mediapipe/ticTacToe/drawFingerTicTacToe";
 import {
   clearCanvas,
   resizeCanvasToVideo,
 } from "./lib/mediapipe/shared/canvas";
+import {
+  getContainedVideoRect,
+  getDistanceBetweenPoints,
+  projectNormalizedLandmarkToRect,
+  type Point,
+} from "./lib/mediapipe/shared/videoLayout";
+import {
+  createEmptyTicTacToeBoard,
+  getNextTicTacToePlayer,
+  getTicTacToeBoardRect,
+  getTicTacToeCellIndexAtPoint,
+  isTicTacToeBoardFull,
+  type TicTacToeBoard,
+  type TicTacToeMark,
+} from "./lib/mediapipe/ticTacToe/board";
 
 type CameraState = "idle" | "loading" | "active" | "error";
 type DetectionMode = "face" | "hands" | "objects" | "ticTacToe";
@@ -37,19 +53,19 @@ const detectionModes = [
   {
     id: "face",
     title: "Face Detection",
-    description: "Track facial landmarks, contours and expressions in real time.",
+    description: "Track facial landmarks, contours and expressions.",
     icon: ScanFace,
   },
   {
     id: "hands",
     title: "Hand Detection",
-    description: "Detect hand landmarks and gestures directly from the webcam feed.",
+    description: "Detect hand landmarks and gestures.",
     icon: Hand,
   },
   {
     id: "objects",
     title: "Object Recognition",
-    description: "Detect common objects and draw live bounding boxes over the webcam feed.",
+    description: "Detect common objects and draw live bounding boxes.",
     icon: Package,
   },
   {
@@ -65,12 +81,19 @@ const detectionModes = [
   icon: typeof ScanFace;
 }>;
 
+const PINCH_DISTANCE_THRESHOLD = 36;
+const TIC_TAC_TOE_RESET_DELAY_MS = 700;
+
 export default function App() {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const lastVideoTimeRef = useRef(-1);
   const lastBlendshapeKeyRef = useRef("");
+  const ticTacToeBoardRef = useRef<TicTacToeBoard>(createEmptyTicTacToeBoard());
+  const ticTacToePlayerRef = useRef<TicTacToeMark>("x");
+  const ticTacToePinchActiveRef = useRef(false);
+  const ticTacToeResetAtRef = useRef<number | null>(null);
 
   const [cameraState, setCameraState] = useState<CameraState>("idle");
   const [activeMode, setActiveMode] = useState<DetectionMode>("face");
@@ -81,6 +104,7 @@ export default function App() {
   const isFaceMode = activeMode === "face";
   const isHandsMode = activeMode === "hands";
   const isObjectsMode = activeMode === "objects";
+  const isTicTacToeMode = activeMode === "ticTacToe";
   const currentMode =
     detectionModes.find((mode) => mode.id === activeMode) ?? detectionModes[0];
 
@@ -88,8 +112,19 @@ export default function App() {
     faceLandmarker,
     status: faceLandmarkerStatus,
   } = useFaceLandmarker(isFaceMode);
-  const { handLandmarker } = useHandLandmarker(isHandsMode);
+  const { handLandmarker } = useHandLandmarker(isHandsMode || isTicTacToeMode);
   const { objectDetector } = useObjectDetector(isObjectsMode);
+
+  const clearTicTacToeBoard = () => {
+    ticTacToeBoardRef.current = createEmptyTicTacToeBoard();
+    ticTacToePlayerRef.current = "x";
+    ticTacToeResetAtRef.current = null;
+  };
+
+  const resetTicTacToeTracking = () => {
+    clearTicTacToeBoard();
+    ticTacToePinchActiveRef.current = false;
+  };
 
   const stopCamera = () => {
     streamRef.current?.getTracks().forEach((track) => track.stop());
@@ -106,6 +141,7 @@ export default function App() {
     lastVideoTimeRef.current = -1;
     lastBlendshapeKeyRef.current = "";
     setVisibleBlendshapes([]);
+    resetTicTacToeTracking();
     setCameraState("idle");
   };
 
@@ -147,6 +183,12 @@ export default function App() {
       streamRef.current?.getTracks().forEach((track) => track.stop());
     };
   }, []);
+
+  useEffect(() => {
+    if (!isTicTacToeMode) {
+      resetTicTacToeTracking();
+    }
+  }, [isTicTacToeMode]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -338,6 +380,141 @@ export default function App() {
     };
   }, [cameraState, isObjectsMode, objectDetector]);
 
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    const video = videoRef.current;
+
+    if (!canvas) {
+      return;
+    }
+
+    if (
+      !isTicTacToeMode ||
+      cameraState !== "active" ||
+      !handLandmarker ||
+      !video
+    ) {
+      clearCanvas(canvas);
+      ticTacToePinchActiveRef.current = false;
+      return;
+    }
+
+    let animationFrameId = 0;
+    let lastVideoTime = -1;
+
+    const renderFrame = () => {
+      const currentVideo = videoRef.current;
+      const currentCanvas = canvasRef.current;
+
+      if (!currentVideo || !currentCanvas) {
+        return;
+      }
+
+      resizeCanvasToVideo(currentCanvas, currentVideo);
+
+      if (
+        currentVideo.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA &&
+        currentVideo.videoWidth > 0 &&
+        currentVideo.videoHeight > 0 &&
+        currentVideo.currentTime !== lastVideoTime
+      ) {
+        const now = performance.now();
+        const result = handLandmarker.detectForVideo(currentVideo, now);
+        const videoRect = getContainedVideoRect(
+          currentCanvas.width,
+          currentCanvas.height,
+          currentVideo.videoWidth,
+          currentVideo.videoHeight
+        );
+        const boardRect = getTicTacToeBoardRect(videoRect);
+
+        if (
+          ticTacToeResetAtRef.current !== null &&
+          now >= ticTacToeResetAtRef.current
+        ) {
+          clearTicTacToeBoard();
+        }
+
+        const activeHandLandmarks = result.landmarks[0];
+        let indexTipPoint: Point | null = null;
+        let thumbTipPoint: Point | null = null;
+        let hoveredCellIndex: number | null = null;
+        let isPinching = false;
+
+        if (activeHandLandmarks) {
+          const indexTipLandmark = activeHandLandmarks[8];
+          const thumbTipLandmark = activeHandLandmarks[4];
+
+          if (indexTipLandmark && thumbTipLandmark) {
+            indexTipPoint = projectNormalizedLandmarkToRect(
+              indexTipLandmark,
+              videoRect
+            );
+            thumbTipPoint = projectNormalizedLandmarkToRect(
+              thumbTipLandmark,
+              videoRect
+            );
+            hoveredCellIndex = getTicTacToeCellIndexAtPoint(
+              boardRect,
+              indexTipPoint
+            );
+            isPinching =
+              getDistanceBetweenPoints(indexTipPoint, thumbTipPoint) <=
+              PINCH_DISTANCE_THRESHOLD;
+
+            if (
+              ticTacToeResetAtRef.current === null &&
+              hoveredCellIndex !== null &&
+              isPinching &&
+              !ticTacToePinchActiveRef.current &&
+              ticTacToeBoardRef.current[hoveredCellIndex] === null
+            ) {
+              const nextBoard = [...ticTacToeBoardRef.current];
+              nextBoard[hoveredCellIndex] = ticTacToePlayerRef.current;
+              ticTacToeBoardRef.current = nextBoard;
+
+              if (isTicTacToeBoardFull(nextBoard)) {
+                ticTacToeResetAtRef.current =
+                  now + TIC_TAC_TOE_RESET_DELAY_MS;
+              } else {
+                ticTacToePlayerRef.current = getNextTicTacToePlayer(
+                  ticTacToePlayerRef.current
+                );
+              }
+            }
+
+            ticTacToePinchActiveRef.current = isPinching;
+          } else {
+            ticTacToePinchActiveRef.current = false;
+          }
+        } else {
+          ticTacToePinchActiveRef.current = false;
+        }
+
+        drawFingerTicTacToe(currentCanvas, {
+          board: ticTacToeBoardRef.current,
+          boardRect,
+          hoveredCellIndex,
+          indexTipPoint,
+          thumbTipPoint,
+          isPinching,
+        });
+
+        lastVideoTime = currentVideo.currentTime;
+      }
+
+      animationFrameId = requestAnimationFrame(renderFrame);
+    };
+
+    animationFrameId = requestAnimationFrame(renderFrame);
+
+    return () => {
+      cancelAnimationFrame(animationFrameId);
+      clearCanvas(canvas);
+      ticTacToePinchActiveRef.current = false;
+    };
+  }, [cameraState, handLandmarker, isTicTacToeMode]);
+
   return (
     <div className="relative min-h-screen overflow-hidden">
       <div className="absolute inset-0 bg-gray-900">
@@ -398,24 +575,28 @@ export default function App() {
                 autoPlay
                 playsInline
                 muted
-                className={`absolute inset-0 block h-full w-full object-contain transition-opacity duration-200 ${cameraState === "active" ? "opacity-100" : "opacity-0"}`}
+                className={`absolute inset-0 block h-full w-full object-contain transition-opacity duration-200 transform-gpu ${isTicTacToeMode ? "-scale-x-100" : ""} ${cameraState === "active" ? "opacity-100" : "opacity-0"}`}
               />
 
               <canvas
                 ref={canvasRef}
-                className={`top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 pointer-events-none absolute inset-0 aspect-video transition-opacity duration-200 ${isFaceMode &&
+                className={`top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 pointer-events-none absolute inset-0 aspect-video transition-opacity duration-200 transform-gpu ${isTicTacToeMode ? "-scale-x-100" : ""} ${isFaceMode &&
                   cameraState === "active" &&
                   faceLandmarkerStatus === "ready"
                   ? "opacity-100"
                   : isHandsMode &&
                     cameraState === "active" &&
                     handLandmarker
-                  ? "opacity-100"
+                    ? "opacity-100"
                   : isObjectsMode &&
-                    cameraState === "active" &&
-                    objectDetector
-                  ? "opacity-100"
-                  : "opacity-0"
+                      cameraState === "active" &&
+                      objectDetector
+                      ? "opacity-100"
+                      : isTicTacToeMode &&
+                        cameraState === "active" &&
+                        handLandmarker
+                        ? "opacity-100"
+                      : "opacity-0"
                   }`}
               />
 
