@@ -47,9 +47,7 @@ The main goal of the project is to combine a modern visual experience with an in
 - Processing through the browser camera.
 - Dynamic visualization of results on the interface.
 - Integration of AI models using MediaPipe.
-- Client-side processing, without the need to send images to a server.
-- Modern, responsive interface focused on user experience.
-- Architecture designed to extend new Computer Vision features.
+- Client-side processing.
 
 ---
 
@@ -77,7 +75,6 @@ In this application, MediaPipe is used to process the video captured from the us
 * Automatic face anonymization.
 * Processed image export.
 * Before/after comparison mode.
-* Gesture or facial landmark detection.
 * Support for image uploads.
 * Support for video processing.
 * Dashboard with detection metrics.
