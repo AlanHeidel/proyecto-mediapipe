@@ -10,12 +10,14 @@ import {
 import Aurora from "./components/bg/Aurora";
 import { useFaceLandmarker } from "./hooks/useFaceLandmarker";
 import { useHandLandmarker } from "./hooks/useHandLandmarker";
+import { useObjectDetector } from "./hooks/useObjectDetector";
 import { drawFaceLandmarks } from "./lib/mediapipe/face/drawFaceLandmarks";
 import {
   getVisibleBlendshapes,
   type VisibleBlendshape,
 } from "./lib/mediapipe/face/getVisibleBlendshapes";
 import { drawHandLandmarks } from "./lib/mediapipe/hands/drawHandLandmarks";
+import { drawObjectDetections } from "./lib/mediapipe/objects/drawObjectDetections";
 import {
   clearCanvas,
   resizeCanvasToVideo,
@@ -47,7 +49,7 @@ const detectionModes = [
   {
     id: "objects",
     title: "Object Recognition",
-    description: "Highlight objects inside the frame and prepare the scene for detection.",
+    description: "Detect common objects and draw live bounding boxes over the webcam feed.",
     icon: Package,
   },
   {
@@ -78,6 +80,7 @@ export default function App() {
 
   const isFaceMode = activeMode === "face";
   const isHandsMode = activeMode === "hands";
+  const isObjectsMode = activeMode === "objects";
   const currentMode =
     detectionModes.find((mode) => mode.id === activeMode) ?? detectionModes[0];
 
@@ -86,6 +89,7 @@ export default function App() {
     status: faceLandmarkerStatus,
   } = useFaceLandmarker(isFaceMode);
   const { handLandmarker } = useHandLandmarker(isHandsMode);
+  const { objectDetector } = useObjectDetector(isObjectsMode);
 
   const stopCamera = () => {
     streamRef.current?.getTracks().forEach((track) => track.stop());
@@ -274,6 +278,66 @@ export default function App() {
     };
   }, [cameraState, handLandmarker, isHandsMode]);
 
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    const video = videoRef.current;
+
+    if (!canvas) {
+      return;
+    }
+
+    if (
+      !isObjectsMode ||
+      cameraState !== "active" ||
+      !objectDetector ||
+      !video
+    ) {
+      clearCanvas(canvas);
+      return;
+    }
+
+    let animationFrameId = 0;
+    let lastVideoTime = -1;
+
+    const renderFrame = () => {
+      const currentVideo = videoRef.current;
+      const currentCanvas = canvasRef.current;
+
+      if (!currentVideo || !currentCanvas) {
+        return;
+      }
+
+      resizeCanvasToVideo(currentCanvas, currentVideo);
+
+      if (
+        currentVideo.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA &&
+        currentVideo.videoWidth > 0 &&
+        currentVideo.videoHeight > 0 &&
+        currentVideo.currentTime !== lastVideoTime
+      ) {
+        const result = objectDetector.detectForVideo(
+          currentVideo,
+          performance.now()
+        );
+
+        drawObjectDetections(currentCanvas, result, {
+          width: currentVideo.videoWidth,
+          height: currentVideo.videoHeight,
+        });
+        lastVideoTime = currentVideo.currentTime;
+      }
+
+      animationFrameId = requestAnimationFrame(renderFrame);
+    };
+
+    animationFrameId = requestAnimationFrame(renderFrame);
+
+    return () => {
+      cancelAnimationFrame(animationFrameId);
+      clearCanvas(canvas);
+    };
+  }, [cameraState, isObjectsMode, objectDetector]);
+
   return (
     <div className="relative min-h-screen overflow-hidden">
       <div className="absolute inset-0 bg-gray-900">
@@ -346,6 +410,10 @@ export default function App() {
                   : isHandsMode &&
                     cameraState === "active" &&
                     handLandmarker
+                  ? "opacity-100"
+                  : isObjectsMode &&
+                    cameraState === "active" &&
+                    objectDetector
                   ? "opacity-100"
                   : "opacity-0"
                   }`}
