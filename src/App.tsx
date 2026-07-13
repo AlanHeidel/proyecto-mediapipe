@@ -1,5 +1,6 @@
 import { startTransition, useEffect, useRef, useState } from "react";
 import {
+  EyeOff,
   Grid3x3,
   Hand,
   Package,
@@ -11,6 +12,7 @@ import Aurora from "./components/bg/Aurora";
 import { useFaceLandmarker } from "./hooks/useFaceLandmarker";
 import { useHandLandmarker } from "./hooks/useHandLandmarker";
 import { useObjectDetector } from "./hooks/useObjectDetector";
+import { drawFaceAnonymization } from "./lib/mediapipe/face/drawFaceAnonymization";
 import { drawFaceLandmarks } from "./lib/mediapipe/face/drawFaceLandmarks";
 import {
   getVisibleBlendshapes,
@@ -40,7 +42,7 @@ import {
 } from "./lib/mediapipe/ticTacToe/board";
 
 type CameraState = "idle" | "loading" | "active" | "error";
-type DetectionMode = "face" | "hands" | "objects" | "ticTacToe";
+type DetectionMode = "face" | "anonymize" | "hands" | "objects" | "ticTacToe";
 
 const statusDotClasses: Record<CameraState, string> = {
   idle: "bg-red-400",
@@ -55,6 +57,12 @@ const detectionModes = [
     title: "Face Detection",
     description: "Track facial landmarks, contours and expressions.",
     icon: ScanFace,
+  },
+  {
+    id: "anonymize",
+    title: "Face Anonymization",
+    description: "Pixelate the facial area inside the live face contour.",
+    icon: EyeOff,
   },
   {
     id: "hands",
@@ -102,6 +110,7 @@ export default function App() {
   >([]);
 
   const isFaceMode = activeMode === "face";
+  const isAnonymizeMode = activeMode === "anonymize";
   const isHandsMode = activeMode === "hands";
   const isObjectsMode = activeMode === "objects";
   const isTicTacToeMode = activeMode === "ticTacToe";
@@ -111,7 +120,7 @@ export default function App() {
   const {
     faceLandmarker,
     status: faceLandmarkerStatus,
-  } = useFaceLandmarker(isFaceMode);
+  } = useFaceLandmarker(isFaceMode || isAnonymizeMode);
   const { handLandmarker } = useHandLandmarker(isHandsMode || isTicTacToeMode);
   const { objectDetector } = useObjectDetector(isObjectsMode);
 
@@ -263,6 +272,63 @@ export default function App() {
       setVisibleBlendshapes([]);
     };
   }, [cameraState, faceLandmarker, isFaceMode]);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    const video = videoRef.current;
+
+    if (!canvas) {
+      return;
+    }
+
+    if (
+      !isAnonymizeMode ||
+      cameraState !== "active" ||
+      !faceLandmarker ||
+      !video
+    ) {
+      clearCanvas(canvas);
+      return;
+    }
+
+    let animationFrameId = 0;
+    let lastVideoTime = -1;
+
+    const renderFrame = () => {
+      const currentVideo = videoRef.current;
+      const currentCanvas = canvasRef.current;
+
+      if (!currentVideo || !currentCanvas) {
+        return;
+      }
+
+      resizeCanvasToVideo(currentCanvas, currentVideo);
+
+      if (
+        currentVideo.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA &&
+        currentVideo.videoWidth > 0 &&
+        currentVideo.videoHeight > 0 &&
+        currentVideo.currentTime !== lastVideoTime
+      ) {
+        const result = faceLandmarker.detectForVideo(
+          currentVideo,
+          performance.now()
+        );
+
+        drawFaceAnonymization(currentCanvas, currentVideo, result);
+        lastVideoTime = currentVideo.currentTime;
+      }
+
+      animationFrameId = requestAnimationFrame(renderFrame);
+    };
+
+    animationFrameId = requestAnimationFrame(renderFrame);
+
+    return () => {
+      cancelAnimationFrame(animationFrameId);
+      clearCanvas(canvas);
+    };
+  }, [cameraState, faceLandmarker, isAnonymizeMode]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -584,19 +650,23 @@ export default function App() {
                   cameraState === "active" &&
                   faceLandmarkerStatus === "ready"
                   ? "opacity-100"
-                  : isHandsMode &&
+                  : isAnonymizeMode &&
                     cameraState === "active" &&
-                    handLandmarker
+                    faceLandmarkerStatus === "ready"
                     ? "opacity-100"
-                  : isObjectsMode &&
+                    : isHandsMode &&
                       cameraState === "active" &&
-                      objectDetector
+                      handLandmarker
                       ? "opacity-100"
-                      : isTicTacToeMode &&
+                      : isObjectsMode &&
                         cameraState === "active" &&
-                        handLandmarker
+                        objectDetector
                         ? "opacity-100"
-                      : "opacity-0"
+                        : isTicTacToeMode &&
+                          cameraState === "active" &&
+                          handLandmarker
+                          ? "opacity-100"
+                          : "opacity-0"
                   }`}
               />
 
@@ -615,6 +685,21 @@ export default function App() {
                       </div>
                     ))}
                   </div>
+                </div>
+              )}
+
+              {cameraState === "idle" && (
+                <div className="pointer-events-none absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 text-center">
+                  <div className="flex h-18 w-18 items-center justify-center rounded-[1.35rem] border border-white/8 bg-white/4 backdrop-blur-md">
+                    <VideoOff
+                      aria-hidden="true"
+                      className="h-8 w-8 text-white/28"
+                      strokeWidth={2}
+                    />
+                  </div>
+                  <p className="m-0 text-[1rem] font-medium tracking-[0.12em] text-white/24">
+                    Camera is off
+                  </p>
                 </div>
               )}
 
