@@ -72,7 +72,6 @@ In this application, MediaPipe is used to process the video captured from the us
   <img src="https://img.shields.io/badge/Future%20Features-333333?style=for-the-badge" alt="Future Features">
 </p>
 
-* Automatic face anonymization.
 * Processed image export.
 * Before/after comparison mode.
 * Support for image uploads.
